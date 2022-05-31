@@ -507,6 +507,8 @@ ELSE()
     SET(ZLIB_FOUND 1)
     SET(ZLIB_LIBRARIES zlibstatic)
     SET(ZLIB_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/contrib/zlib ${CMAKE_CURRENT_BINARY_DIR}/contrib/zlib)
+
+    TARGET_USE_COMMON_OUTPUT_DIRECTORY(zlibstatic)
     # need to ensure we don't link with system zlib or minizip as well.
     SET(ASSIMP_BUILD_MINIZIP 1)
   ELSE()

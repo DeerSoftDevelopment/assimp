@@ -46,6 +46,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <assimp/DefaultLogger.hpp>
 #include <assimp/Base64.hpp>
 
+#include <rapidjson/stringbuffer.h>
+#include <rapidjson/writer.h>
+
 // clang-format off
 #ifdef ASSIMP_ENABLE_DRACO
 
@@ -103,9 +106,26 @@ namespace {
 //
 // JSON Value reading helpers
 //
+
+static inline std::string ToJsonString(const rapidjson::Value& v) {
+    rapidjson::StringBuffer sb;
+    rapidjson::Writer<rapidjson::StringBuffer> w(sb);
+    v.Accept(w);
+    return std::string(sb.GetString(), sb.GetSize());
+}
+
 inline CustomExtension ReadExtensions(const char *name, Value &obj) {
     CustomExtension ret;
     ret.name = name;
+
+    // NEW: keep the entire subtree as one raw JSON string
+    if (obj.IsObject() || obj.IsArray()) {
+        ret.mStringValue.value = ToJsonString(obj);
+        ret.mStringValue.isPresent = true;
+        return ret;
+    }
+
+
     if (obj.IsObject()) {
         ret.mValues.isPresent = true;
         for (auto it = obj.MemberBegin(); it != obj.MemberEnd(); ++it) {

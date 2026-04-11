@@ -1,5 +1,8 @@
 #!/bin/bash
 
+set -e
+set -o pipefail
+
 #
 # Written and maintained by the.arul@gmail.com (2014)
 #
@@ -41,6 +44,8 @@ CPP_STD_LIB_LIST=(libc++ libstdc++)
 CPP_STD_LIB=
 CPP_STD_LIST=(c++11 c++14)
 CPP_STD=c++11
+ASSIMP_BUILD_ZLIB=ON
+EXTRA_CMAKE_ARGS=""
 
 function join { local IFS="$1"; shift; echo "$*"; }
 
@@ -48,6 +53,7 @@ build_arch()
 {
     IOS_SDK_DEVICE=iPhoneOS
     CPP_DEV_TARGET=${CPP_DEV_TARGET_LIST[0]}
+    ZLIB_CMAKE_ARGS=""
 
     if [[ "$BUILD_ARCHS_SIMULATOR" =~ "$1" ]]
     then
@@ -74,9 +80,14 @@ build_arch()
     export CPPFLAGS="$CFLAGS"
     export CXXFLAGS="$CFLAGS -std=$CPP_STD"
 
-    rm CMakeCache.txt
+    if [[ "$ASSIMP_BUILD_ZLIB" == "OFF" ]]; then
+        ZLIB_CMAKE_ARGS="-DZLIB_INCLUDE_DIR=$SDKROOT/usr/include -DZLIB_LIBRARY=$SDKROOT/usr/lib/libz.tbd -DZLIB_LIBRARY_RELEASE=$SDKROOT/usr/lib/libz.tbd -DZLIB_LIBRARY_DEBUG=$SDKROOT/usr/lib/libz.tbd"
+        echo "[!] Using SDK zlib from $SDKROOT/usr/lib/libz.tbd"
+    fi
+
+    rm -f CMakeCache.txt
     
-    CMAKE_CLI_INPUT="-DCMAKE_C_COMPILER=$CMAKE_C_COMPILER -DCMAKE_CXX_COMPILER=$CMAKE_CXX_COMPILER -DCMAKE_TOOLCHAIN_FILE=./port/iOS/IPHONEOS_$(echo $1 | tr '[:lower:]' '[:upper:]')_TOOLCHAIN.cmake -DCMAKE_BUILD_TYPE=$BUILD_TYPE -DCMAKE_WARN_DEPRECATED=OFF -DASSIMP_WARNINGS_AS_ERRORS=OFF -DENABLE_BOOST_WORKAROUND=ON -DBUILD_SHARED_LIBS=$BUILD_SHARED_LIBS"
+    CMAKE_CLI_INPUT="-DCMAKE_C_COMPILER=$CMAKE_C_COMPILER -DCMAKE_CXX_COMPILER=$CMAKE_CXX_COMPILER -DCMAKE_TOOLCHAIN_FILE=./port/iOS/IPHONEOS_$(echo $1 | tr '[:lower:]' '[:upper:]')_TOOLCHAIN.cmake -DCMAKE_BUILD_TYPE=$BUILD_TYPE -DCMAKE_WARN_DEPRECATED=OFF -DASSIMP_WARNINGS_AS_ERRORS=OFF -DENABLE_BOOST_WORKAROUND=ON -DBUILD_SHARED_LIBS=$BUILD_SHARED_LIBS -DASSIMP_BUILD_ZLIB=$ASSIMP_BUILD_ZLIB $ZLIB_CMAKE_ARGS $EXTRA_CMAKE_ARGS"
     
     echo "[!] Running CMake with -G 'Unix Makefiles' $CMAKE_CLI_INPUT"
     
@@ -116,6 +127,14 @@ for i in "$@"; do
     -a=*|--archs=*)
         DEPLOY_ARCHS=`echo $i | sed 's/[-a-zA-Z0-9]*=//'`
         echo "[!] Selecting architectures: $DEPLOY_ARCHS"
+    ;;
+    -DASSIMP_BUILD_ZLIB=*|-DASSIMP_BUILD_ZLIB:BOOL=*)
+        ASSIMP_BUILD_ZLIB=`echo $i | sed 's/[-a-zA-Z0-9:_]*=//'`
+        echo "[!] Selecting assimp zlib build: $ASSIMP_BUILD_ZLIB"
+    ;;
+    -D*)
+        EXTRA_CMAKE_ARGS="$EXTRA_CMAKE_ARGS $i"
+        echo "[!] Forwarding CMake argument: $i"
     ;;
     --debug)
     	BUILD_TYPE=Debug        
@@ -185,17 +204,75 @@ make_fat_static_binary()
     lipo $LIPO_ARGS
 }
 
+has_static_library()
+{
+	LIB_NAME=$1
+    for ARCH_TARGET in $DEPLOY_ARCHS; do
+        if [[ ! -f "$BUILD_DIR/$ARCH_TARGET/$LIB_NAME.a" ]]; then
+            return 1
+        fi
+    done
+    return 0
+}
+
+has_shared_library()
+{
+	LIB_NAME=$1
+    for ARCH_TARGET in $DEPLOY_ARCHS; do
+        if [[ ! -f "$BUILD_DIR/$ARCH_TARGET/$LIB_NAME.dylib" ]]; then
+            return 1
+        fi
+    done
+    return 0
+}
+
+make_fat_static_binary_if_present()
+{
+	LIB_NAME=$1
+    if has_static_library "$LIB_NAME"; then
+        make_fat_static_binary "$LIB_NAME"
+    else
+        echo "[!] Skipping fat binary for $LIB_NAME because one or more static archives are missing."
+    fi
+}
+
+make_fat_static_or_shared_binary_if_present()
+{
+	LIB_NAME=$1
+    if [[ "$BUILD_SHARED_LIBS" =~ "ON" ]]; then
+        if has_shared_library "$LIB_NAME"; then
+            make_fat_static_or_shared_binary "$LIB_NAME"
+        else
+            echo "[!] Skipping fat binary for $LIB_NAME because one or more dynamic libraries are missing."
+        fi
+    else
+        if has_static_library "$LIB_NAME"; then
+            make_fat_static_or_shared_binary "$LIB_NAME"
+        else
+            echo "[!] Skipping fat binary for $LIB_NAME because one or more static archives are missing."
+        fi
+    fi
+}
+
 if [[ "$DEPLOY_FAT" -eq 1 ]]; then
     echo '[+] Creating fat binaries ...'
     
     if [[ "$BUILD_TYPE" =~ "Debug" ]]; then
-    	make_fat_static_or_shared_binary 'libassimpd'
-	    make_fat_static_binary 'libIrrXMLd'
-	    make_fat_static_binary 'libzlibstaticd'
+	    make_fat_static_or_shared_binary_if_present 'libassimpd'
+	    make_fat_static_binary_if_present 'libIrrXMLd'
+        if [[ "$ASSIMP_BUILD_ZLIB" != "OFF" ]]; then
+	        make_fat_static_binary_if_present 'libzlibstaticd'
+        else
+            echo '[!] Skipping zlib fat binary because ASSIMP_BUILD_ZLIB=OFF.'
+        fi
 	else
-		make_fat_static_or_shared_binary 'libassimp'
-	    make_fat_static_binary 'libIrrXML'
-	    make_fat_static_binary 'libzlibstatic'
+		make_fat_static_or_shared_binary_if_present 'libassimp'
+	    make_fat_static_binary_if_present 'libIrrXML'
+        if [[ "$ASSIMP_BUILD_ZLIB" != "OFF" ]]; then
+	        make_fat_static_binary_if_present 'libzlibstatic'
+        else
+            echo '[!] Skipping zlib fat binary because ASSIMP_BUILD_ZLIB=OFF.'
+        fi
 	fi
     
     echo "[!] Done! The fat binaries can be found at $BUILD_DIR"
